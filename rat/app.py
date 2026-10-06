@@ -275,7 +275,16 @@ def api_paths(repo_id: int, q: str = "") -> list[str]:
 
 
 @app.get("/api/repos/{repo_id}/commits")
-def api_commits(repo_id: int, query: str = "", offset: int = 0, limit: int = 50) -> dict:
+def api_commits(repo_id: int, query: str = "", path: str = "", authors: str = "",
+                ts_from: int | None = None, ts_to: int | None = None,
+                offset: int = 0, limit: int = 50) -> dict:
+    """List commits matching the current dashboard filters.
+
+    query:   free text over hash / subject / author name / author email
+    path:    scope filter -- commits with changes on the path or below it
+    authors: comma-separated canonical author ids
+    ts_from / ts_to: committer-date window [ts_from, ts_to)
+    """
     _require_ready(_get_repo(repo_id))
     if limit < 1 or limit > 200:
         limit = 50
@@ -283,14 +292,46 @@ def api_commits(repo_id: int, query: str = "", offset: int = 0, limit: int = 50)
         offset = 0
     conn = get_conn()
     raw_to_eff, author_rows = author_maps(repo_id)
+
+    where_parts = ["c.repo_id=?"]
     args: list = [repo_id]
-    where = " WHERE c.repo_id=?"
+
     q = query.strip()
     if q:
         like = "%" + _escape_like(q.lower()) + "%"
-        where += (" AND (lower(c.hash) LIKE ? ESCAPE '\\' OR lower(c.subject) LIKE ? ESCAPE '\\'"
-                  " OR lower(a.name) LIKE ? ESCAPE '\\' OR lower(a.email) LIKE ? ESCAPE '\\')")
+        where_parts.append(
+            "(lower(c.hash) LIKE ? ESCAPE '\\' OR lower(c.subject) LIKE ? ESCAPE '\\'"
+            " OR lower(a.name) LIKE ? ESCAPE '\\' OR lower(a.email) LIKE ? ESCAPE '\\')")
         args += [like, like, like, like]
+
+    author_q = authors.strip()
+    if author_q:
+        try:
+            wanted = {int(x) for x in author_q.split(",") if x.strip()}
+        except ValueError:
+            raise HTTPException(400, "Invalid author filter") from None
+        raw_ids = {rid for rid, eff in raw_to_eff.items() if eff in wanted}
+        if not raw_ids:
+            raw_ids = {-1}
+        marks = ",".join("?" * len(raw_ids))
+        where_parts.append(f"c.author_id IN ({marks})")
+        args += sorted(raw_ids)
+
+    scope = path.strip().strip("/")
+    if scope:
+        where_parts.append(
+            "(c.id IN (SELECT ch.commit_id FROM changes ch "
+            "WHERE ch.path=? OR ch.path LIKE ? ESCAPE '\\'))")
+        args += [scope, _escape_like(scope) + "/%"]
+
+    if ts_from is not None:
+        where_parts.append("c.committer_ts>=?")
+        args.append(int(ts_from))
+    if ts_to is not None:
+        where_parts.append("c.committer_ts<?")
+        args.append(int(ts_to))
+
+    where = " WHERE " + " AND ".join(where_parts)
     total = conn.execute(
         "SELECT COUNT(*) AS n FROM commits c JOIN authors a ON a.id=c.author_id" + where,
         args).fetchone()["n"]

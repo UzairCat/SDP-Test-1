@@ -47,17 +47,7 @@
       </div>
       <div class="fb-group" id="fb-commits">
         <label>Commits</label>
-        <div class="mode-chips" id="commit-modes">
-          <button data-mode="all" class="chip active">All</button>
-          <button data-mode="range" class="chip">Date range</button>
-          <button data-mode="manual" class="chip">Manual</button>
-        </div>
-        <div id="range-inputs" class="range-inputs hidden">
-          <input type="date" id="date-from" class="input" title="From (inclusive)">
-          <span>&ndash;</span>
-          <input type="date" id="date-to" class="input" title="To (exclusive)">
-        </div>
-        <button id="btn-manual-info" class="btn ghost tiny hidden">0 commits selected</button>
+        <button id="set-summary" class="pill" title="Change the commit set in the Commits tab">All history</button>
       </div>
       <div class="fb-group grow" id="fb-scope">
         <label>Scope <button id="btn-copy-path" class="link hidden" title="Copy path">copy</button></label>

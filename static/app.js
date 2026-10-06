@@ -93,9 +93,11 @@ const state = {
   filters: { authors: [], path: "", mode: "all", tsFrom: null, tsTo: null, hashes: [] },
   manualSel: new Set(),
   metrics: null,
-  commits: { q: "", offset: 0, limit: 50, total: 0, rows: [] },
+  commits: { q: "", offset: 0, limit: 50, total: 0, rows: [], loaded: false },
   tab: "overview",
   sort: { key: "churn", dir: -1 },
+  authorsTab: { q: "", offset: 0, limit: 25 },
+  explorerTab: { q: "", offset: 0, limit: 25 },
   pollTimer: null,
   loading: 0,
 };
@@ -396,6 +398,7 @@ async function loadMetrics() {
   try {
     state.metrics = await api(`/api/repos/${state.repoId}/metrics`, { body: currentFilterBody() });
     renderAll();
+    if (state.commits.loaded) await loadCommits();
   } catch (e) {
     toast(`Metrics failed: ${e.message}`, "error");
   } finally { setLoading(false); }
@@ -411,11 +414,29 @@ function renderAll() {
   renderCommitsTab();
 }
 
+function localDateStr(ts) {
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function renderSetInfo() {
   const m = state.metrics;
   $("#set-info").textContent = m ? `${fmt(m.commit_count)} commits in set` : "—";
-  $("#btn-manual-info").classList.toggle("hidden", state.filters.mode !== "manual");
-  $("#btn-manual-info").textContent = `${state.manualSel.size} commits selected`;
+  const pill = $("#set-summary");
+  if (!pill) return;
+  const f = state.filters;
+  if (f.mode === "manual") {
+    pill.textContent = `Manual: ${state.manualSel.size} commits`;
+    pill.classList.add("accent");
+  } else if (f.mode === "range") {
+    const from = f.tsFrom ? localDateStr(f.tsFrom) : "start";
+    const to = f.tsTo ? localDateStr(f.tsTo - 86400) : "now";
+    pill.textContent = `${from} → ${to}`;
+    pill.classList.add("accent");
+  } else {
+    pill.textContent = "All history";
+    pill.classList.remove("accent");
+  }
 }
 
 function renderScopeUI() {
@@ -436,6 +457,7 @@ function renderScopeUI() {
 
 function setScope(path) {
   state.filters.path = path || "";
+  state.explorerTab = { q: "", offset: 0, limit: state.explorerTab.limit };
   renderTree();
   loadMetrics();
 }
@@ -592,13 +614,21 @@ function renderExplorer() {
 
   if (m.scope.type === "file") { renderFileView(host, m); return; }
 
-  const rows = [...(m.children || [])];
+  const all = [...(m.children || [])];
+  const q = state.explorerTab.q.trim().toLowerCase();
+  const rows = q ? all.filter((r) => r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q)) : all;
   const { key, dir } = state.sort;
   rows.sort((a, b) => {
     let va = a[key], vb = b[key];
     if (typeof va === "string") return va.localeCompare(vb) * dir;
     return (va - vb) * dir;
   });
+  const { offset, limit } = state.explorerTab;
+  const pages = Math.max(1, Math.ceil(rows.length / limit));
+  state.explorerTab.offset = Math.min(offset, (pages - 1) * limit);
+  const off = state.explorerTab.offset;
+  const pageRows = rows.slice(off, off + limit);
+  const page = Math.floor(off / limit) + 1;
   const maxChurn = Math.max(1, ...rows.map((r) => r.churn));
   host.innerHTML = `
     <div class="section-head">
@@ -606,10 +636,19 @@ function renderExplorer() {
       <span class="spacer"></span>
       <button class="btn ghost tiny" id="btn-csv-children">Export CSV</button>
     </div>
+    <div class="toolbar">
+      <input id="explorer-q" class="input" type="search" placeholder="Filter by name or path…" value="${esc(state.explorerTab.q)}" style="width:280px">
+      <span class="spacer"></span>
+      <div class="pager">
+        <button class="btn ghost tiny" id="ex-prev" ${page <= 1 ? "disabled" : ""}>‹</button>
+        <span>${fmt(rows.length)} objects · page ${page} / ${pages}</span>
+        <button class="btn ghost tiny" id="ex-next" ${page >= pages ? "disabled" : ""}>›</button>
+      </div>
+    </div>
     <div class="table-wrap">
     <table><thead><tr>${COLS.map((c) => `<th class="${c.sortable ? "sortable" : ""} ${c.num ? "num" : ""}" data-k="${c.key}">
       ${c.label}${c.sortable && key === c.key ? (dir === -1 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead>
-    <tbody>${rows.length ? rows.map((r) => explorerRow(r, maxChurn)).join("")
+    <tbody>${pageRows.length ? pageRows.map((r) => explorerRow(r, maxChurn)).join("")
       : `<tr><td colspan="9"><div class="empty" style="padding:30px">No file activity in this scope for the current commit set.</div></td></tr>`}</tbody></table></div>`;
   $$("#tab-explorer th.sortable").forEach((th) => th.onclick = () => {
     const k = th.dataset.k;
@@ -619,6 +658,13 @@ function renderExplorer() {
   $$("#tab-explorer .rowlink").forEach((el) => el.onclick = () => setScope(el.dataset.path));
   $("#btn-csv-children").onclick = () =>
     downloadCSV(`rat-${state.filters.path.replace(/\//g, "_") || "root"}-children.csv`, rows);
+  $("#explorer-q").oninput = debounce(() => {
+    state.explorerTab.q = $("#explorer-q").value;
+    state.explorerTab.offset = 0;
+    renderExplorer();
+  }, 200);
+  $("#ex-prev").onclick = () => { state.explorerTab.offset = Math.max(0, off - limit); renderExplorer(); };
+  $("#ex-next").onclick = () => { state.explorerTab.offset = Math.min((pages - 1) * limit, off + limit); renderExplorer(); };
 }
 
 function explorerRow(r, maxChurn) {
@@ -638,7 +684,15 @@ function explorerRow(r, maxChurn) {
 function renderFileView(host, m) {
   const d = m.file_detail || { authors: [] };
   const t = m.totals;
-  const maxChurn = Math.max(1, ...d.authors.map((a) => a.churn));
+  const q = state.explorerTab.q.trim().toLowerCase();
+  const rows = q ? d.authors.filter((a) => a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q)) : d.authors;
+  const { offset, limit } = state.explorerTab;
+  const pages = Math.max(1, Math.ceil(rows.length / limit));
+  state.explorerTab.offset = Math.min(offset, (pages - 1) * limit);
+  const off = state.explorerTab.offset;
+  const pageRows = rows.slice(off, off + limit);
+  const page = Math.floor(off / limit) + 1;
+  const maxChurn = Math.max(1, ...pageRows.map((a) => a.churn));
   host.innerHTML = `
     <div class="section-head">
       <h2>File: ${esc(m.scope.path)}</h2>
@@ -656,10 +710,19 @@ function renderFileView(host, m) {
     </div>
     <div class="section-head" style="margin-top:18px"><h2>Author ownership</h2>
       <span class="sub">share of churn on this file within the current commit set</span></div>
+    <div class="toolbar">
+      <input id="explorer-q" class="input" type="search" placeholder="Filter authors…" value="${esc(state.explorerTab.q)}" style="width:260px">
+      <span class="spacer"></span>
+      <div class="pager">
+        <button class="btn ghost tiny" id="ex-prev" ${page <= 1 ? "disabled" : ""}>‹</button>
+        <span>${fmt(rows.length)} authors · page ${page} / ${pages}</span>
+        <button class="btn ghost tiny" id="ex-next" ${page >= pages ? "disabled" : ""}>›</button>
+      </div>
+    </div>
     <div class="table-wrap"><table>
       <thead><tr><th>Author</th><th class="num">Added</th><th class="num">Removed</th><th class="num">Churn</th>
       <th class="num">Mods</th><th>Ownership</th></tr></thead>
-      <tbody>${d.authors.length ? d.authors.map((a) => `<tr>
+      <tbody>${pageRows.length ? pageRows.map((a) => `<tr>
         <td title="${esc(a.email)}">${esc(a.name)}</td>
         <td class="num add">${fmt(a.added)}</td><td class="num rem">${fmt(a.removed)}</td>
         <td class="num bar-cell"><div class="fill" style="width:${Math.max(3, (a.churn / maxChurn) * 100)}%"></div><span>${fmt(a.churn)}</span></td>
@@ -668,7 +731,14 @@ function renderFileView(host, m) {
       : `<tr><td colspan="6"><div class="empty" style="padding:30px">No author activity on this file in the current commit set.</div></td></tr>`}</tbody>
     </table></div>`;
   $("#btn-csv-file").onclick = () => downloadCSV(`rat-${m.scope.path.replace(/\//g, "_")}-authors.csv`,
-    d.authors.map((a) => ({ author: a.name, email: a.email, added: a.added, removed: a.removed, churn: a.churn, mods: a.mods, ownership: a.ownership })));
+    rows.map((a) => ({ author: a.name, email: a.email, added: a.added, removed: a.removed, churn: a.churn, mods: a.mods, ownership: a.ownership })));
+  $("#explorer-q").oninput = debounce(() => {
+    state.explorerTab.q = $("#explorer-q").value;
+    state.explorerTab.offset = 0;
+    renderExplorer();
+  }, 200);
+  $("#ex-prev").onclick = () => { state.explorerTab.offset = Math.max(0, off - limit); renderExplorer(); };
+  $("#ex-next").onclick = () => { state.explorerTab.offset = Math.min((pages - 1) * limit, off + limit); renderExplorer(); };
 }
 
 function emptyRepo() {
@@ -682,7 +752,15 @@ function renderAuthorsTab() {
   const host = $("#tab-authors");
   const m = state.metrics;
   if (!m) { host.innerHTML = emptyRepo(); return; }
-  const rows = m.authors || [];
+  const all = m.authors || [];
+  const q = state.authorsTab.q.trim().toLowerCase();
+  const rows = q ? all.filter((a) => a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q)) : all;
+  const { offset, limit } = state.authorsTab;
+  const pages = Math.max(1, Math.ceil(rows.length / limit));
+  state.authorsTab.offset = Math.min(offset, (pages - 1) * limit);
+  const off = state.authorsTab.offset;
+  const pageRows = rows.slice(off, off + limit);
+  const page = Math.floor(off / limit) + 1;
   const maxChurn = Math.max(1, ...rows.map((a) => a.churn));
   const scope = state.filters.path ? `scope: ${state.filters.path}` : "scope: repository root";
   host.innerHTML = `
@@ -694,11 +772,20 @@ function renderAuthorsTab() {
       <button class="btn tiny ${authorSel.size ? "" : "hidden"}" id="btn-merge">Merge selected (${authorSel.size})</button>
       <button class="btn ghost tiny ${authorSel.size ? "" : "hidden"}" id="btn-merge-clear">Clear</button>
     </div>
+    <div class="toolbar">
+      <input id="author-q" class="input" type="search" placeholder="Filter authors…" value="${esc(state.authorsTab.q)}" style="width:260px">
+      <span class="spacer"></span>
+      <div class="pager">
+        <button class="btn ghost tiny" id="at-prev" ${page <= 1 ? "disabled" : ""}>‹</button>
+        <span>${fmt(rows.length)} authors · page ${page} / ${pages}</span>
+        <button class="btn ghost tiny" id="at-next" ${page >= pages ? "disabled" : ""}>›</button>
+      </div>
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr><th><input type="checkbox" id="author-checkall" title="Select all"></th>
+      <thead><tr><th><input type="checkbox" id="author-checkall" title="Select page"></th>
       <th>Author</th><th class="num">Commits</th><th class="num">Added</th><th class="num">Removed</th>
       <th class="num">Churn</th><th class="num">Mods</th><th>Ownership</th><th>Merged identities</th></tr></thead>
-      <tbody>${rows.length ? rows.map((a) => {
+      <tbody>${pageRows.length ? pageRows.map((a) => {
         const group = state.authors.find((g) => g.id === a.id);
         const aliases = (group && group.aliases) || [];
         return `<tr>
@@ -717,14 +804,21 @@ function renderAuthorsTab() {
     <p class="sub" style="color:var(--muted);font-size:12.5px;margin-top:10px">
       Merged identities update all metrics instantly. .mailmap entries are applied automatically at ingestion;
       use the checkboxes to merge identities manually.</p>`;
+  $("#author-q").oninput = debounce(() => {
+    state.authorsTab.q = $("#author-q").value;
+    state.authorsTab.offset = 0;
+    renderAuthorsTab();
+  }, 200);
+  $("#at-prev").onclick = () => { state.authorsTab.offset = Math.max(0, off - limit); renderAuthorsTab(); };
+  $("#at-next").onclick = () => { state.authorsTab.offset = Math.min((pages - 1) * limit, off + limit); renderAuthorsTab(); };
   $$("#tab-authors tbody input[type=checkbox][data-id]").forEach((cb) => cb.onchange = () => {
     cb.checked ? authorSel.add(+cb.dataset.id) : authorSel.delete(+cb.dataset.id);
     renderAuthorsTab();
   });
   const checkall = $("#author-checkall");
   if (checkall) checkall.onchange = () => {
-    if (checkall.checked) rows.forEach((a) => authorSel.add(a.id));
-    else authorSel.clear();
+    if (checkall.checked) pageRows.forEach((a) => authorSel.add(a.id));
+    else pageRows.forEach((a) => authorSel.delete(a.id));
     renderAuthorsTab();
   };
   $("#btn-csv-authors").onclick = () => downloadCSV("rat-authors.csv", rows);
@@ -790,30 +884,62 @@ function showMergeModal() {
 
 /* ---------------------------------------------------------------- commits tab */
 async function loadCommits() {
-  if (!state.repoId) return;
-  const { q, offset, limit } = state.commits;
-  const data = await api(`/api/repos/${state.repoId}/commits?query=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`);
-  state.commits.total = data.total;
-  state.commits.rows = data.rows;
+  if (!state.repoId || !state.metrics) return;
+  const f = state.filters;
+  const c = state.commits;
+  const params = new URLSearchParams({
+    query: c.q, offset: String(c.offset), limit: String(c.limit),
+  });
+  if (f.mode === "range") {
+    if (f.tsFrom) params.set("ts_from", String(f.tsFrom));
+    if (f.tsTo) params.set("ts_to", String(f.tsTo));
+  }
+  if (f.path) params.set("path", f.path);
+  if (f.authors.length) params.set("authors", f.authors.join(","));
+  const data = await api(`/api/repos/${state.repoId}/commits?${params.toString()}`);
+  c.total = data.total;
+  c.rows = data.rows;
+  c.loaded = true;
   renderCommitsTab();
 }
 
 function renderCommitsTab() {
   const host = $("#tab-commits");
   if (!state.metrics) { host.innerHTML = emptyRepo(); return; }
+  const f = state.filters;
   const { q, offset, limit, total, rows } = state.commits;
   const pages = Math.max(1, Math.ceil(total / limit));
   const page = Math.floor(offset / limit) + 1;
-  const active = state.filters.mode === "manual";
+  const mode = f.mode;
+  const chips = [
+    { m: "all", label: "All history" },
+    { m: "range", label: "Date range" },
+    { m: "manual", label: state.manualSel.size ? `Manual (${state.manualSel.size})` : "Manual" },
+  ];
+  const bits = [];
+  if (f.path) bits.push(`path: ${f.path}`);
+  if (f.authors.length) bits.push(`${f.authors.length} author${f.authors.length > 1 ? "s" : ""}`);
   host.innerHTML = `
     <div class="section-head">
       <h2>Commits</h2>
-      <span class="sub">${fmt(total)} non-merge commits reachable from HEAD · search by hash, subject or author</span>
+      <span class="sub">${fmt(total)} commits match the current filters${bits.length ? ` — ${esc(bits.join(" · "))}` : ""} · tick commits to build a manual set</span>
       <span class="spacer"></span>
-      <input id="commit-q" class="input" type="search" placeholder="Search commits…" value="${esc(q)}" style="width:260px">
+      ${mode === "manual" && state.manualSel.size ? `<button class="btn ghost tiny" id="btn-clear-sel">Clear selection</button>` : ""}
     </div>
-    ${active ? `<div style="margin-bottom:10px"><button class="btn tiny" id="btn-use-sel">Use ${state.manualSel.size} selected commits as filter</button>
-      <button class="btn ghost tiny" id="btn-clear-sel">Clear manual filter</button></div>` : ""}
+    <div class="toolbar">
+      <div class="mode-chips" id="commit-modes">
+        ${chips.map((ch) => `<button data-mode="${ch.m}" class="chip ${mode === ch.m ? "active" : ""}">${esc(ch.label)}</button>`).join("")}
+      </div>
+      <div id="range-inputs" class="range-inputs ${mode === "range" ? "" : "hidden"}">
+        <input type="date" id="date-from" class="input" title="From (inclusive)" value="${f.tsFrom ? localDateStr(f.tsFrom) : ""}">
+        <span>&ndash;</span>
+        <input type="date" id="date-to" class="input" title="To (exclusive)" value="${f.tsTo ? localDateStr(f.tsTo - 86400) : ""}">
+      </div>
+      <span class="spacer"></span>
+      <input id="commit-q" class="input" type="search" placeholder="Search hash, subject, author…" value="${esc(q)}" style="width:280px">
+    </div>
+    ${mode === "manual" && !state.manualSel.size
+      ? `<div class="hint-bar">Manual commit set is active but empty — tick commits below to add them, or pick another mode.</div>` : ""}
     <div class="table-wrap">
     <table><thead><tr><th><input type="checkbox" id="commit-checkall" title="Select page"></th>
       <th>Hash</th><th>Date</th><th>Author</th><th>Subject</th></tr></thead>
@@ -828,53 +954,59 @@ function renderCommitsTab() {
       <button class="btn ghost tiny" id="pg-prev" ${page <= 1 ? "disabled" : ""}>‹ Prev</button>
       <span>page ${page} / ${pages}</span>
       <button class="btn ghost tiny" id="pg-next" ${page >= pages ? "disabled" : ""}>Next ›</button>
-      <span class="spacer" style="flex:1"></span>
-      <span>${state.manualSel.size} selected for manual filter</span>
+      <span style="flex:1"></span>
+      <span>${state.manualSel.size} selected</span>
     </div></div>`;
-  $("#commit-q").oninput = debounce(() => { state.commits.q = $("#commit-q").value; state.commits.offset = 0; loadCommits(); }, 300);
+  $$("#commit-modes .chip").forEach((c) => c.onclick = async () => {
+    if (c.dataset.mode === f.mode) return;
+    state.filters.mode = c.dataset.mode;
+    await loadMetrics();
+  });
+  const df = $("#date-from"), dt = $("#date-to");
+  if (df) df.onchange = async () => {
+    state.filters.tsFrom = dateToTs(df.value, false);
+    state.filters.mode = "range";
+    await loadMetrics();
+  };
+  if (dt) dt.onchange = async () => {
+    state.filters.tsTo = dateToTs(dt.value, true);
+    state.filters.mode = "range";
+    await loadMetrics();
+  };
+  $("#commit-q").oninput = debounce(() => {
+    state.commits.q = $("#commit-q").value;
+    state.commits.offset = 0;
+    loadCommits();
+  }, 300);
   $("#pg-prev").onclick = () => { state.commits.offset = Math.max(0, offset - limit); loadCommits(); };
   $("#pg-next").onclick = () => { state.commits.offset = Math.min((pages - 1) * limit, offset + limit); loadCommits(); };
-  $$("#tab-commits input[data-h]").forEach((cb) => cb.onchange = () => {
+  $$("#tab-commits input[data-h]").forEach((cb) => cb.onchange = async () => {
     cb.checked ? state.manualSel.add(cb.dataset.h) : state.manualSel.delete(cb.dataset.h);
-    $("#btn-manual-info").textContent = `${state.manualSel.size} commits selected`;
-    const cnt = host.querySelector(".pager span:last-child");
-    if (cnt) cnt.textContent = `${state.manualSel.size} selected for manual filter`;
+    state.filters.mode = "manual";
+    await loadMetrics();
   });
   const checkall = $("#commit-checkall");
-  if (checkall) checkall.onchange = () => {
+  if (checkall) checkall.onchange = async () => {
     rows.forEach((c) => checkall.checked ? state.manualSel.add(c.hash) : state.manualSel.delete(c.hash));
-    renderCommitsTab(); renderSetInfo();
-  };
-  const use = $("#btn-use-sel");
-  if (use) use.onclick = async () => {
-    if (!state.manualSel.size) return toast("Select at least one commit", "error");
     state.filters.mode = "manual";
-    state.filters.hashes = [...state.manualSel];
-    setModeChips("manual");
     await loadMetrics();
-    toast(`Filtered to ${state.manualSel.size} commits`);
   };
   const clear = $("#btn-clear-sel");
   if (clear) clear.onclick = async () => {
+    state.manualSel.clear();
     state.filters.mode = "all";
-    setModeChips("all");
     await loadMetrics();
   };
 }
 
 /* ---------------------------------------------------------------- filter UI */
-function setModeChips(mode) {
-  $$("#commit-modes .chip").forEach((c) => c.classList.toggle("active", c.dataset.mode === mode));
-  $("#range-inputs").classList.toggle("hidden", mode !== "range");
-}
-
 function resetFilterUI() {
-  setModeChips("all");
-  $("#date-from").value = "";
-  $("#date-to").value = "";
   $("#author-dd-search").value = "";
   authorSel.clear();
   expandedDirs.clear();
+  state.authorsTab = { q: "", offset: 0, limit: 25 };
+  state.explorerTab = { q: "", offset: 0, limit: 25 };
+  state.commits = { q: "", offset: 0, limit: 50, total: 0, rows: [], loaded: false };
 }
 
 function dateToTs(v, exclusive) {
@@ -885,33 +1017,7 @@ function dateToTs(v, exclusive) {
 }
 
 function initFilterEvents() {
-  $$("#commit-modes .chip").forEach((c) => c.onclick = async () => {
-    const mode = c.dataset.mode;
-    if (mode === "manual") {
-      if (!state.manualSel.size) {
-        state.tab = "commits";
-        switchTab("commits");
-        toast("Select commits with the checkboxes, then press “Use selected commits”");
-        return;
-      }
-    }
-    state.filters.mode = mode;
-    setModeChips(mode);
-    await loadMetrics();
-  });
-  $("#date-from").onchange = async () => {
-    state.filters.tsFrom = dateToTs($("#date-from").value, false);
-    state.filters.mode = "range";
-    setModeChips("range");
-    await loadMetrics();
-  };
-  $("#date-to").onchange = async () => {
-    state.filters.tsTo = dateToTs($("#date-to").value, true);
-    state.filters.mode = "range";
-    setModeChips("range");
-    await loadMetrics();
-  };
-  $("#btn-manual-info").onclick = () => switchTab("commits");
+  $("#set-summary").onclick = () => switchTab("commits");
   $("#btn-scope-root").onclick = () => setScope("");
   $("#btn-copy-path").onclick = () => {
     navigator.clipboard?.writeText(state.filters.path).then(() => toast("Path copied"));
@@ -959,7 +1065,7 @@ function switchTab(name) {
   state.tab = name;
   $$("#tabs button[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   $$(".tab").forEach((t) => t.classList.toggle("hidden", t.id !== `tab-${name}`));
-  if (name === "commits" && !state.commits.rows.length) loadCommits();
+  if (name === "commits" && !state.commits.loaded) loadCommits();
   Object.values(charts).forEach((c) => c.resize());
 }
 

@@ -49,11 +49,11 @@ kept side by side and switched between at any time.
 | Ingestion | Deep clone from remote URL **and** zip upload with `.git` |
 | Multi-repo | Any number of repositories, switched in the sidebar |
 | Filtering | By repository, author(s), file/directory scope, and commit set |
-| Commit sets | All history, a time window `[from, to)`, or a manually selected list of commits |
+| Commit sets | All history, a time window `[from, to)`, or a manually selected list of commits (tick commits in the Commits tab; the tab also lists the commits matching the current repository / author / scope filters) |
 | Author merging | `.mailmap` applied automatically at ingestion; manual merge & unmerge in the Authors tab |
 | Metrics | File, directory, repository, commit-set and author metric categories (see below) |
 | Visualisation | Churn timeline, directory churn treemap, top-files and author charts, ownership bars |
-| QoL | Path search & lazy tree, sortable tables, CSV export, toasts, loading states, progress bars |
+| QoL | Path search & lazy tree, per-tab search + paging, sortable tables, CSV export, toasts, loading states, progress bars |
 
 ## Metrics
 

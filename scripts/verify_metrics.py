@@ -213,25 +213,36 @@ check("manual set churn", m["totals"]["churn"], want_churn)
 authors = api("/api/repos/1/authors")
 top = authors[0]
 name = top["name"]
-# ground truth for that author's commits (no mailmap in cJSON => raw == eff)
+# An effective author may span several raw identities (a manual merge creates
+# canonical links; cJSON has no .mailmap), so ground truth counts commits by
+# exact (name, email) identity over EVERY member of the author's group.
+identities = {(m["name"], m["email"]) for m in top.get("members", [top])}
 proc = subprocess.run(
     ["git", "-C", REPO, "log", "--no-merges",
-     f"--author=^{re.escape(name)} <", "--format=%H"],
+     "--format=%an%x1f%ae%x1f%H"],
     capture_output=True, text=True)
-author_commits = len(proc.stdout.split())
+author_commits = sum(
+    1 for line in proc.stdout.split("\n")
+    if tuple(line.split("\x1f", 2)[:2]) in identities)
 # find author by name in API list
 m = api("/api/repos/1/metrics", {})
 api_author = next(a for a in m["authors"] if a["name"] == name)
 check(f"author '{name}' commits", api_author["commits"], author_commits)
 
-# author churn on a specific file
+# author churn on a specific file (same merged-identity grouping)
 proc = subprocess.run(
     ["git", "-C", REPO, "log", "--no-merges", "-M50%", "--numstat",
-     f"--author={name}", "--format=%x1e%H", "--", file_path],
+     "--format=%x1e%an%x1f%ae", "--", file_path],
     capture_output=True, text=True, errors="replace")
 want_a = want_r = 0
-for line in proc.stdout.splitlines():
-    if not line or line.startswith("\x1e"):
+cur_ident = None
+# NOTE: str.splitlines() treats \x1e as a line boundary, so parse on "\n".
+for line in proc.stdout.split("\n"):
+    if line.startswith("\x1e"):
+        parts = line[1:].split("\x1f", 1)
+        cur_ident = tuple(parts) if len(parts) == 2 else None
+        continue
+    if cur_ident not in identities:
         continue
     parts = line.split("\t", 2)
     if len(parts) == 3 and parts[0] != "-" and parts[1] != "-":
