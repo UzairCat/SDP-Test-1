@@ -23,6 +23,25 @@ function fmtDate(ts) { return new Date(ts * 1000).toLocaleDateString("en-GB", { 
 function fmtDT(ts) { return new Date(ts * 1000).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
+/* Tab re-renders rebuild the markup (search box included) -- wrap a render in
+   withFocus to keep the caret in the input that had focus. */
+async function withFocus(render) {
+  const ae = document.activeElement;
+  const keep = ae && ae.id && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")
+    ? { id: ae.id, pos: ae.selectionStart } : null;
+  await render();
+  if (keep) {
+    const el = document.getElementById(keep.id);
+    if (el && !el.disabled) {
+      el.focus();
+      try {
+        const pos = keep.pos == null ? el.value.length : keep.pos;
+        el.setSelectionRange(pos, pos);
+      } catch { /* inputs without a selection API */ }
+    }
+  }
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     method: opts.method || (opts.body ? "POST" : "GET"),
@@ -157,6 +176,7 @@ function renderRepoStatus() {
 
 async function selectRepo(id, silent) {
   state.repoId = id;
+  try { localStorage.setItem("rat-repo", String(id)); } catch { /* private mode */ }
   state.info = null;
   state.authors = [];
   state.treePaths = [];
@@ -510,7 +530,14 @@ function drawTimeline(series) {
   if (!series || !series.length) return c.setOption({ xAxis: { data: [] }, series: [] });
   c.setOption({
     animation: false, grid: { left: 60, right: 55, top: 26, bottom: 44 },
-    tooltip: { trigger: "axis", backgroundColor: "#1a2431", borderColor: "#263242", textStyle: { color: "#d8e0ea", fontSize: 12 } },
+    tooltip: {
+      trigger: "axis", backgroundColor: "#1a2431", borderColor: "#263242",
+      textStyle: { color: "#d8e0ea", fontSize: 12 },
+      // series name coloured instead of the default circle markers
+      formatter: (params) => `<b>${esc(params[0].axisValue)}</b>` + params.map((p) =>
+        `<div><span style="color:${p.color};font-weight:600">${esc(p.seriesName)}</span>` +
+        `&nbsp;&nbsp;${p.value == null ? "–" : fmt(p.value)}</div>`).join(""),
+    },
     legend: { textStyle: { color: "#8b98a9", fontSize: 12 }, top: 0 },
     xAxis: { type: "category", data: series.map((s) => s.month), axisLine: { lineStyle: { color: "#263242" } }, axisLabel: { color: "#8b98a9" } },
     yAxis: [
@@ -588,7 +615,11 @@ function drawAuthorChurn(authors) {
 function ensureChart(id) {
   const el = document.getElementById(id);
   if (!el) return null;
-  if (!charts[id] || charts[id].isDisposed?.()) {
+  // The overview tab rebuilds its markup on every metrics load, so a cached
+  // instance may point at a detached element -- rebind when the chart's DOM
+  // is no longer the one in the document.
+  if (!charts[id] || charts[id].isDisposed?.() || charts[id].getDom() !== el) {
+    if (charts[id] && !charts[id].isDisposed?.()) charts[id].dispose();
     charts[id] = echarts.init(el);
   }
   return charts[id];
@@ -658,11 +689,11 @@ function renderExplorer() {
   $$("#tab-explorer .rowlink").forEach((el) => el.onclick = () => setScope(el.dataset.path));
   $("#btn-csv-children").onclick = () =>
     downloadCSV(`rat-${state.filters.path.replace(/\//g, "_") || "root"}-children.csv`, rows);
-  $("#explorer-q").oninput = debounce(() => {
+  $("#explorer-q").oninput = debounce(() => withFocus(() => {
     state.explorerTab.q = $("#explorer-q").value;
     state.explorerTab.offset = 0;
     renderExplorer();
-  }, 200);
+  }), 200);
   $("#ex-prev").onclick = () => { state.explorerTab.offset = Math.max(0, off - limit); renderExplorer(); };
   $("#ex-next").onclick = () => { state.explorerTab.offset = Math.min((pages - 1) * limit, off + limit); renderExplorer(); };
 }
@@ -732,11 +763,11 @@ function renderFileView(host, m) {
     </table></div>`;
   $("#btn-csv-file").onclick = () => downloadCSV(`rat-${m.scope.path.replace(/\//g, "_")}-authors.csv`,
     rows.map((a) => ({ author: a.name, email: a.email, added: a.added, removed: a.removed, churn: a.churn, mods: a.mods, ownership: a.ownership })));
-  $("#explorer-q").oninput = debounce(() => {
+  $("#explorer-q").oninput = debounce(() => withFocus(() => {
     state.explorerTab.q = $("#explorer-q").value;
     state.explorerTab.offset = 0;
     renderExplorer();
-  }, 200);
+  }), 200);
   $("#ex-prev").onclick = () => { state.explorerTab.offset = Math.max(0, off - limit); renderExplorer(); };
   $("#ex-next").onclick = () => { state.explorerTab.offset = Math.min((pages - 1) * limit, off + limit); renderExplorer(); };
 }
@@ -804,11 +835,11 @@ function renderAuthorsTab() {
     <p class="sub" style="color:var(--muted);font-size:12.5px;margin-top:10px">
       Merged identities update all metrics instantly. .mailmap entries are applied automatically at ingestion;
       use the checkboxes to merge identities manually.</p>`;
-  $("#author-q").oninput = debounce(() => {
+  $("#author-q").oninput = debounce(() => withFocus(() => {
     state.authorsTab.q = $("#author-q").value;
     state.authorsTab.offset = 0;
     renderAuthorsTab();
-  }, 200);
+  }), 200);
   $("#at-prev").onclick = () => { state.authorsTab.offset = Math.max(0, off - limit); renderAuthorsTab(); };
   $("#at-next").onclick = () => { state.authorsTab.offset = Math.min((pages - 1) * limit, off + limit); renderAuthorsTab(); };
   $$("#tab-authors tbody input[type=checkbox][data-id]").forEach((cb) => cb.onchange = () => {
@@ -935,8 +966,13 @@ function renderCommitsTab() {
         <span>&ndash;</span>
         <input type="date" id="date-to" class="input" title="To (exclusive)" value="${f.tsTo ? localDateStr(f.tsTo - 86400) : ""}">
       </div>
-      <span class="spacer"></span>
       <input id="commit-q" class="input" type="search" placeholder="Search hash, subject, author…" value="${esc(q)}" style="width:280px">
+      <span class="spacer"></span>
+      <div class="pager">
+        <button class="btn ghost tiny" id="pg-prev" ${page <= 1 ? "disabled" : ""}>‹</button>
+        <span>${fmt(total)} commits · page ${page} / ${pages}${state.manualSel.size ? ` · ${state.manualSel.size} selected` : ""}</span>
+        <button class="btn ghost tiny" id="pg-next" ${page >= pages ? "disabled" : ""}>›</button>
+      </div>
     </div>
     ${mode === "manual" && !state.manualSel.size
       ? `<div class="hint-bar">Manual commit set is active but empty — tick commits below to add them, or pick another mode.</div>` : ""}
@@ -949,14 +985,7 @@ function renderCommitsTab() {
       <td>${fmtDT(c.ts)}</td>
       <td>${esc(c.author)}</td>
       <td class="subject" title="${esc(c.subject)}">${esc(c.subject)}</td></tr>`).join("")
-      || `<tr><td colspan="5"><div class="empty" style="padding:30px">No commits match.</div></td></tr>`}</tbody></table>
-    <div class="pager">
-      <button class="btn ghost tiny" id="pg-prev" ${page <= 1 ? "disabled" : ""}>‹ Prev</button>
-      <span>page ${page} / ${pages}</span>
-      <button class="btn ghost tiny" id="pg-next" ${page >= pages ? "disabled" : ""}>Next ›</button>
-      <span style="flex:1"></span>
-      <span>${state.manualSel.size} selected</span>
-    </div></div>`;
+      || `<tr><td colspan="5"><div class="empty" style="padding:30px">No commits match.</div></td></tr>`}</tbody></table></div>`;
   $$("#commit-modes .chip").forEach((c) => c.onclick = async () => {
     if (c.dataset.mode === f.mode) return;
     state.filters.mode = c.dataset.mode;
@@ -973,11 +1002,11 @@ function renderCommitsTab() {
     state.filters.mode = "range";
     await loadMetrics();
   };
-  $("#commit-q").oninput = debounce(() => {
+  $("#commit-q").oninput = debounce(() => withFocus(async () => {
     state.commits.q = $("#commit-q").value;
     state.commits.offset = 0;
-    loadCommits();
-  }, 300);
+    await loadCommits();
+  }), 300);
   $("#pg-prev").onclick = () => { state.commits.offset = Math.max(0, offset - limit); loadCommits(); };
   $("#pg-next").onclick = () => { state.commits.offset = Math.min((pages - 1) * limit, offset + limit); loadCommits(); };
   $$("#tab-commits input[data-h]").forEach((cb) => cb.onchange = async () => {
@@ -1096,7 +1125,10 @@ function init() {
   initFilterEvents();
   initTreeEvents();
   fetchRepos().then(async () => {
-    const first = state.repos.find((r) => r.status === "ready") || state.repos[0];
+    let saved = null;
+    try { saved = parseInt(localStorage.getItem("rat-repo"), 10); } catch { /* private mode */ }
+    const first = state.repos.find((r) => r.id === saved)
+      || state.repos.find((r) => r.status === "ready") || state.repos[0];
     if (first) await selectRepo(first.id);
     else renderAll();
   }).catch((e) => toast(e.message, "error"));
