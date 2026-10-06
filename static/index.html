@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAT — Repo Analysis Tool</title>
+<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'&gt;&lt;rect width='32' height='32' rx='7' fill='%234f9cf9'/&gt;&lt;text x='16' y='22' font-size='16' font-family='monospace' font-weight='bold' text-anchor='middle' fill='%230f141a'&gt;R&lt;/text&gt;&lt;/svg&gt;">
+<link rel="stylesheet" href="/style.css">
+<script src="/vendor/echarts.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="brand"><span class="logo">R</span><div><b>RAT</b><small>Repo Analysis Tool</small></div></div>
+    <div class="side-block">
+      <div class="side-label">Repository</div>
+      <div class="repo-row">
+        <select id="repo-select" title="Switch repository"></select>
+        <button id="btn-add-repo" class="icon-btn" title="Add repository (clone or upload)">+</button>
+        <button id="btn-del-repo" class="icon-btn danger" title="Remove selected repository">&times;</button>
+      </div>
+      <div id="repo-status" class="repo-status hidden"></div>
+    </div>
+    <div class="side-block grow">
+      <div class="side-label">Files &amp; directories</div>
+      <input id="tree-search" class="input" type="search" placeholder="Filter paths&hellip;" autocomplete="off">
+      <div id="tree" class="tree"></div>
+      <button id="btn-scope-root" class="btn ghost tiny">Scope: repository root</button>
+    </div>
+  </aside>
+
+  <main id="main">
+    <header id="filterbar">
+      <div class="fb-group" id="fb-authors">
+        <label>Authors</label>
+        <div class="dd">
+          <button id="author-dd-btn" class="dd-btn">All authors</button>
+          <div class="dd-panel hidden" id="author-dd-panel">
+            <input id="author-dd-search" class="input" type="search" placeholder="Search authors&hellip;">
+            <div id="author-dd-list" class="dd-list"></div>
+            <div class="dd-foot">
+              <button id="author-dd-clear" class="btn ghost tiny">Clear</button>
+              <button id="author-dd-done" class="btn tiny">Done</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fb-group" id="fb-commits">
+        <label>Commits</label>
+        <div class="mode-chips" id="commit-modes">
+          <button data-mode="all" class="chip active">All</button>
+          <button data-mode="range" class="chip">Date range</button>
+          <button data-mode="manual" class="chip">Manual</button>
+        </div>
+        <div id="range-inputs" class="range-inputs hidden">
+          <input type="date" id="date-from" class="input" title="From (inclusive)">
+          <span>&ndash;</span>
+          <input type="date" id="date-to" class="input" title="To (exclusive)">
+        </div>
+        <button id="btn-manual-info" class="btn ghost tiny hidden">0 commits selected</button>
+      </div>
+      <div class="fb-group grow" id="fb-scope">
+        <label>Scope <button id="btn-copy-path" class="link hidden" title="Copy path">copy</button></label>
+        <div id="scope-crumb" class="crumb">root</div>
+      </div>
+      <div class="fb-group" id="fb-meta">
+        <label>&nbsp;</label>
+        <div id="set-info" class="set-info">—</div>
+      </div>
+    </header>
+
+    <nav id="tabs">
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="explorer">Explorer</button>
+      <button data-tab="authors">Authors</button>
+      <button data-tab="commits">Commits</button>
+      <span class="spacer"></span>
+      <button id="btn-reset-filters" class="btn ghost tiny" title="Reset all filters">Reset filters</button>
+    </nav>
+
+    <div id="loading" class="hidden"><div class="spinner"></div></div>
+
+    <section id="tab-overview" class="tab"></section>
+    <section id="tab-explorer" class="tab hidden"></section>
+    <section id="tab-authors" class="tab hidden"></section>
+    <section id="tab-commits" class="tab hidden"></section>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+<script src="/app.js"></script>
+</body>
+</html>
