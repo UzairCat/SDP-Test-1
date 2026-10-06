@@ -1,0 +1,8 @@
+# Runtime data (repositories, SQLite database)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
