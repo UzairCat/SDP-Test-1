@@ -3,8 +3,9 @@
 Correctness notes (per the COMS3011A spec):
 - H-bar = non-merge commits reachable from HEAD -> `git log HEAD --no-merges`
 - Rename detection at 50% similarity -> `-M50%`; renames are attributed to
-  the NEW path; a pure rename contributes 0 added / 0 removed lines (it is
-  still recorded so the path is visible, but lambda == 0 so it is not a
+  the NEW path; a pure rename contributes 0 added / 0 removed lines (the
+  OLD path is also recorded as a zero-change row so the object stays
+  visible, matching H[F] = U(h[F] u h[p][F]); lambda == 0 so it is not a
   "modification" per the spec formula).
 - Binary files (numstat prints `-`) are not measured.
 - Deleted files appear as `0  N  path` rows -> removals on their path.
@@ -103,6 +104,24 @@ def clean_path(raw: str) -> str | None:
     return p
 
 
+def old_path(raw: str) -> str | None:
+    """Extract the OLD path from a numstat rename row (None if not a rename)."""
+    p = raw
+    if len(p) >= 2 and p.startswith('"') and p.endswith('"'):
+        p = _unquote_c(p[1:-1])
+    m = _BRACE_RENAME.search(p)
+    if m:
+        p = p[: m.start()] + m.group(1).strip() + p[m.end():]
+    elif " => " in p:
+        p = p.rsplit(" => ", 1)[0].strip()
+    else:
+        return None
+    p = p.replace("//", "/").lstrip("/")
+    if p in ("", "."):
+        return None
+    return p
+
+
 def count_commits(repo_path: str) -> int:
     out = run_git(repo_path, "rev-list", "--count", "--no-merges", "HEAD")
     return int(out)
@@ -159,6 +178,13 @@ def stream_log(repo_path: str) -> Iterator[dict]:
             path = clean_path(raw_path)
             if path:
                 current["changes"].append((path, a, r))
+                # A pure rename changes no metric, but the old path is still
+                # an object of the commit set (it exists in h[p][F]); record
+                # it with zero churn so it stays visible and queryable.
+                if a == 0 and r == 0:
+                    old = old_path(raw_path)
+                    if old and old != path:
+                        current["changes"].append((old, 0, 0))
     if current is not None:
         yield current
     proc.stdout.close()

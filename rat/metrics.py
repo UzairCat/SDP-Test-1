@@ -137,6 +137,11 @@ def compute_metrics(repo_id: int, *, authors: list[int] | None = None,
     per_path_author: dict[tuple[str, int], list[int]] = {}
     dirs_sum: dict[str, list[int]] = {}          # dir -> [added, removed]
     dir_mods: dict[str, int] = {}                # dir -> distinct commits with churn
+    # (dir, author) -> distinct commits with churn: per the spec's I_n(h, o)
+    # modifications count COMMITS, so an author's modifications on a directory
+    # is the number of their commits touching the subtree -- not a sum of
+    # per-file counts (one commit touching two files must count once).
+    dir_author_mods: dict[tuple[str, int], int] = {}
 
     cur = conn.execute(
         "SELECT ch.path, ch.commit_id, ch.added, ch.removed, s.author_id "
@@ -146,14 +151,18 @@ def compute_metrics(repo_id: int, *, authors: list[int] | None = None,
     prev_cid: int | None = None
     touched_dirs: set[str] = set()
     commit_has_churn = False
+    commit_eff: int | None = None
 
     def _flush_commit() -> None:
-        nonlocal touched_dirs, commit_has_churn
-        if commit_has_churn:
+        nonlocal touched_dirs, commit_has_churn, commit_eff
+        if commit_has_churn and commit_eff is not None:
             for d in touched_dirs:
                 dir_mods[d] = dir_mods.get(d, 0) + 1
+                key = (d, commit_eff)
+                dir_author_mods[key] = dir_author_mods.get(key, 0) + 1
         touched_dirs = set()
         commit_has_churn = False
+        commit_eff = None
 
     for p, cid, a, r, aid in cur:
         eff = raw_to_eff.get(aid, aid)
@@ -178,6 +187,7 @@ def compute_metrics(repo_id: int, *, authors: list[int] | None = None,
                 if prev_cid is not None:
                     _flush_commit()
                 prev_cid = cid
+                commit_eff = eff
             commit_has_churn = True
             # ancestor directories (root '' included)
             parts = p.split("/")
@@ -267,12 +277,16 @@ def compute_metrics(repo_id: int, *, authors: list[int] | None = None,
         row = author_rows.get(eff, {"name": "?", "email": "?"})
         a2 = per_author_scope.get(eff, [0, 0, 0])
         churn_a = a2[0] + a2[1]
+        # modifications = the author's COMMITS touching the scope (distinct),
+        # matching the reference semantics; per-file sums only for a file scope
+        mods_a = (a2[2] if scope_type == "file"
+                  else dir_author_mods.get((scope, eff), 0))
         ownership = (churn_a / scope_churn) if scope_churn > 0 else 0.0
         authors_payload.append({
             "id": eff, "name": row["name"], "email": row["email"],
             "commits": author_commits.get(eff, 0),
             "added": a2[0], "removed": a2[1], "growth": a2[0] - a2[1],
-            "churn": churn_a, "mods": a2[2],
+            "churn": churn_a, "mods": mods_a,
             "ownership": round(ownership, 4),
         })
     if authors:  # keep only explicitly selected canonical authors
