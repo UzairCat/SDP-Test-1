@@ -13,11 +13,19 @@ repository, author, file/directory, and arbitrary commit sets.
 Requirements: **Python 3.10+** and **git** (2.20+ recommended, for `check-mailmap`).
 
 ```bash
+./start.sh
+```
+
+That single command creates a local virtual environment (`.venv`), installs the
+dependencies and starts the server. Then open **http://127.0.0.1:8000** in your
+browser.
+
+Or run the two commands by hand:
+
+```bash
 pip install -r requirements.txt
 python run.py
 ```
-
-Then open **http://127.0.0.1:8000** in your browser.
 
 Everything runs locally: the server, the SQLite database (`data/rat.db`) and the
 cloned repositories (`data/repos/`) stay on your machine. Press `Ctrl+C` to stop.
@@ -79,6 +87,7 @@ time.
 ## Architecture
 
 ```
+start.sh           one-command setup + launch (venv, deps, server)
 run.py              entry point (uvicorn)
 rat/
   app.py            FastAPI endpoints + static dashboard hosting
